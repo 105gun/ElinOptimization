@@ -4,14 +4,11 @@ using BepInEx;
 using HarmonyLib;
 using UnityEngine;
 using System.Linq;
+using System.Reflection;
 using System.IO;
 using UnityEngine.Assertions;
-using System.Diagnostics;
-using DG.Tweening;
-using System.Threading.Tasks;
-using Unity.Burst;
-using Unity.Jobs;
-using Unity.Collections;
+using System.Reflection.Emit;
+using HarmonyLib.Tools;
 
 namespace ElinOpt;
 
@@ -35,8 +32,11 @@ class CharaHostilityPatch
             case 5:
                 __result = Hostility.Friend;
                 break;
-            default:
+            case 8:
                 __result = Hostility.Ally;
+                break;
+            default:
+                __result = (Hostility)__instance._cints[4];
                 break;
         }
         return false;
@@ -63,8 +63,11 @@ class CharaCHostilityPatch
             case 5:
                 __result = Hostility.Friend;
                 break;
-            default:
+            case 8:
                 __result = Hostility.Ally;
+                break;
+            default:
+                __result = (Hostility)__instance.GetInt(12, null);
                 break;
         }
         return false;
@@ -97,7 +100,7 @@ class CharaOriginalHostilityPatch
             __result = Hostility.Ally;
             return false;
         }
-        if (__instance.c_originalHostility != (Hostility)0)
+        if (__instance.GetInt(12, null) != 0)
         {
             __result = __instance.c_originalHostility;
             return false;
@@ -115,13 +118,197 @@ class CharaOriginalHostilityPatch
                 case 'F':
                     __result = Hostility.Friend;
                     break;
-                default:
+                case 'A':
                     __result = Hostility.Ally;
+                    break;
+                default:
+                    __result = Hostility.Enemy;
                     break;
             }
             return false;
         }
         __result = Hostility.Enemy;
         return false;
+    }
+}
+
+[HarmonyPatch]
+// GameUpdater.SensorUpdater.FixedUpdate
+class SensorUpdaterPatch
+{
+    /*
+    Reference:
+	public bool IsHostile(Chara c)
+	{
+		if (c == null)
+		{
+			return false;
+		}
+		if (base.IsPCFactionOrMinion)
+		{
+			if ((c == EClass.pc.enemy && !c.IsPCFactionOrMinion) || c.hostility <= Hostility.Enemy)   // PASS 1
+			{
+				return true;
+			}
+		}
+		else
+		{
+			if (this.trait is TraitGuard && c.IsPCParty && EClass.player.IsCriminal && EClass._zone.instance == null)   // PASS 2
+			{
+				return true;
+			}
+			if (this.OriginalHostility >= Hostility.Friend)
+			{
+				if (c.hostility <= Hostility.Enemy && c.OriginalHostility == Hostility.Enemy)   // PASS 3
+				{
+					return true;
+				}
+			}
+			else if (this.OriginalHostility <= Hostility.Enemy && (c.IsPCFactionOrMinion || (c.OriginalHostility != Hostility.Enemy && c.hostility >= Hostility.Friend)))   // PASS 4
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+    */
+
+    static List<Chara> bucketPass1 = new List<Chara>();
+    static List<Chara> bucketPass2 = new List<Chara>();
+    static List<Chara> bucketPass3 = new List<Chara>();
+    static List<Chara> bucketPass4 = new List<Chara>();
+
+    static List<Chara> bucketPass2And3 = new List<Chara>();
+    static List<Chara> bucketPass2And4 = new List<Chara>();
+
+    static void BuildBucket()
+    {
+        List<Chara> charas = EClass._map.charas;
+
+        foreach(Chara c in charas)
+        {
+            // Pass 1
+            if ((c == EClass.pc.enemy && !c.IsPCFactionOrMinion) || c.hostility <= Hostility.Enemy)
+            {
+                bucketPass1.Add(c);
+            }
+            // Pass 2
+            if (c.IsPCParty && EClass.player.IsCriminal && EClass._zone.instance == null)
+            {
+                bucketPass2.Add(c);
+                bucketPass2And3.Add(c);
+                bucketPass2And4.Add(c);
+            }
+            // Pass 3
+            if (c.hostility <= Hostility.Enemy && c.OriginalHostility == Hostility.Enemy)
+            {
+                bucketPass3.Add(c);
+                bucketPass2And3.Add(c);
+            }
+            // Pass 4
+            if (c.IsPCFactionOrMinion || (c.OriginalHostility != Hostility.Enemy && c.hostility >= Hostility.Friend))
+            {
+                bucketPass4.Add(c);
+                bucketPass2And4.Add(c);
+            }
+        }
+    }
+
+    static void ClearBucket()
+    {
+        bucketPass1.Clear();
+        bucketPass2.Clear();
+        bucketPass3.Clear();
+        bucketPass4.Clear();
+        bucketPass2And3.Clear();
+        bucketPass2And4.Clear();
+    }
+
+    public static List<Chara> GetBucket(Chara targetChara)
+    {
+        if (targetChara.IsPCFactionOrMinion)
+        {
+            return bucketPass1;
+        }
+        else
+        {
+            if (targetChara.trait is TraitGuard)
+            {
+                if (targetChara.OriginalHostility >= Hostility.Friend)
+                {
+                    return bucketPass2And3;
+                }
+                else if (targetChara.OriginalHostility <= Hostility.Enemy)
+                {
+                    return bucketPass2And4;
+                }
+                return bucketPass2;
+            }
+            if (targetChara.OriginalHostility >= Hostility.Friend)
+            {
+                return bucketPass3;
+            }
+            else if (targetChara.OriginalHostility <= Hostility.Enemy)
+            {
+                return bucketPass4;
+            }
+        }
+        return new List<Chara>();
+    }
+
+    [HarmonyPatch(typeof(Chara), nameof(Chara.FindNewEnemy))]
+    internal static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions, ILGenerator generator)
+    {
+        var instructionList = new CodeMatcher(instructions, generator)
+            .Start()
+            .MatchStartForward(
+                new CodeMatch(o => o.opcode == OpCodes.Call &&
+                                o.operand.ToString().Contains("_map")))
+            .SetOpcodeAndAdvance(OpCodes.Nop)
+            .InsertAndAdvance(
+                new CodeInstruction(OpCodes.Ldarg_0),
+                Transpilers.EmitDelegate(GetBucket))
+            .RemoveInstructions(1)
+            .MatchStartForward(
+                new CodeMatch(o => o.opcode == OpCodes.Call &&
+                                o.operand.ToString().Contains("_map")))
+            .InsertAndAdvance(
+                new CodeInstruction(OpCodes.Ldarg_0),
+                Transpilers.EmitDelegate(GetBucket))
+            .RemoveInstructions(2)
+            .InstructionEnumeration();
+
+        foreach (CodeInstruction instruction in instructionList)
+        {
+            Plugin.ModLog(instruction.ToString(), PrivateLogLevel.Error);
+        }
+        return instructionList;
+    }
+
+    [HarmonyPatch(typeof(GameUpdater.SensorUpdater), nameof(GameUpdater.SensorUpdater.FixedUpdate))]
+    static bool Prefix(GameUpdater.SensorUpdater __instance)
+    {
+        List<Chara> charas = EClass._map.charas;
+        if (charas.Count > 200)
+        {
+            __instance.SetUpdatesPerFrame(charas.Count, 1f);
+            BuildBucket();
+            for (int i = 0; i < __instance.updatesPerFrame; i++)
+            {
+                __instance.index++;
+                if (__instance.index >= charas.Count)
+                {
+                    __instance.index = 0;
+                }
+                Chara chara = charas[__instance.index];
+                if (chara.IsAliveInCurrentZone && !chara.IsPC)
+                {
+                    chara.FindNewEnemy();
+                }
+            }
+            ClearBucket();
+            return false;
+        }
+        return true;
     }
 }

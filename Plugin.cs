@@ -24,7 +24,7 @@ public class Plugin : BaseUnityPlugin
     public const string MOD_AUTHOR = "105gun";
     public const string MOD_NAME = "ElinOpt";
     public const string MOD_NAME_LOWER = "elinopt";
-    public const string MOD_VERSION = "1.0.0.0";
+    public const string MOD_VERSION = "1.0.1.0";
     static PrivateLogLevel pluginLogLevel = PrivateLogLevel.Info;
 
     private void Start()
