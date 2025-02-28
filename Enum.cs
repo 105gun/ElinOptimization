@@ -181,6 +181,14 @@ class SensorUpdaterPatch
     static List<Chara> bucketPass2And3 = new List<Chara>();
     static List<Chara> bucketPass2And4 = new List<Chara>();
 
+    static bool usingNewAlgorithm
+    {
+        get
+        {
+            return EClass._map.charas.Count > 200;
+        }
+    }
+
     static void BuildBucket()
     {
         List<Chara> charas = EClass._map.charas;
@@ -226,6 +234,11 @@ class SensorUpdaterPatch
 
     public static List<Chara> GetBucket(Chara targetChara)
     {
+        if (!usingNewAlgorithm)
+        {
+            return EClass._map.charas;
+        }
+
         if (targetChara.IsPCFactionOrMinion)
         {
             return bucketPass1;
@@ -289,7 +302,7 @@ class SensorUpdaterPatch
     static bool Prefix(GameUpdater.SensorUpdater __instance)
     {
         List<Chara> charas = EClass._map.charas;
-        if (charas.Count > 200)
+        if (usingNewAlgorithm)
         {
             __instance.SetUpdatesPerFrame(charas.Count, 1f);
             BuildBucket();
